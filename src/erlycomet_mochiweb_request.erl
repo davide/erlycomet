@@ -43,7 +43,7 @@
 -record(state, {
     id = undefined,
     connection_type,
-    events = [],
+    messages = [],
     timeout = 1200000,      %% 20 min, just for testing
     callback = undefined}).  
 
@@ -96,19 +96,14 @@ handle(Req, _Other) ->
 process_bayeux_msg(Req, JsonObj, Callback) ->
     case JsonObj of   
         Array when is_list(Array) -> 
-            Out  = [ process_msg(Req, X, Callback) || X <- Array ],
-            Out1 = [ Msg || {comment, Msg} <- Out],
-            case Out1 of 
-                [] -> Out;
-                _ -> {comment, Out1}
-            end;
+            [ process_msg(Req, X, Callback) || X <- Array ];
         Struct-> 
             process_msg(Req, Struct, Callback)
     end.
 
 
 process_msg(Req, Struct, Callback) ->
-    process_cmd(Req, get_json_map_val(<<"channel">>, Struct), Struct, Callback).
+    process_channel(Req, get_json_map_val(<<"channel">>, Struct), Struct, Callback).
 
 
 get_json_map_val(Key, {struct, Pairs}) when is_list(Pairs) ->
@@ -120,18 +115,13 @@ get_json_map_val(_, _) ->
     undefined.
     
 
-process_cmd(_Req, <<"/meta/handshake">> = Channel, Struct, _) ->  
+process_channel(_Req, <<"/meta/handshake">> = Channel, Struct, _) ->  
     % Advice = {struct, [{reconnect, "retry"},
     %                   {interval, 5000}]},
     % - get the alert from 
-    Ext = get_json_map_val(<<"ext">>, Struct),
+    _Ext = get_json_map_val(<<"ext">>, Struct),
     Id = generate_id(),
-    CF = case get_json_map_val(<<"json-comment-filtered">>, Ext) of
-        true -> true;
-        _ -> false
-    end,
-    erlycomet_api:replace_connection(Id, 0, handshake, CF),
-    Ext1 = {struct, [{'json-comment-filtered', CF}]}, %not sure if this is necessary
+    erlycomet_api:replace_connection(Id, 0, handshake),
     JsonResp = {struct, [
         {channel, Channel}, 
         {version, 1.0},
@@ -139,18 +129,17 @@ process_cmd(_Req, <<"/meta/handshake">> = Channel, Struct, _) ->
             <<"long-polling">>,
             <<"callback-polling">>]},
         {clientId, Id},
-        {successful, true},
-        {ext, Ext1}]},
+        {successful, true}]},
     % Resp2 = [{advice, Advice} | Resp],
-    comment_filter(JsonResp, CF);
+	JsonResp;
     
-process_cmd(Req, <<"/meta/connect">> = Channel, Struct, Callback) ->  
+process_channel(Req, <<"/meta/connect">> = Channel, Struct, Callback) ->  
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     ConnectionType = get_json_map_val(<<"connectionType">>, Struct),
     L = [{channel,  Channel}, {clientId, ClientId}],    
     case erlycomet_api:replace_connection(ClientId, self(), connected) of
         {ok, Status} when Status =:= ok ; Status =:= replaced_hs ->
-            comment_filter({struct, [{successful, true} | L]}, erlycomet_api:connection(ClientId));
+            {struct, [{successful, true} | L]};
             % don't reply immediately to new connect message.
             % instead wait. when new message is received, reply to connect and 
             % include the new message.  This is acceptable given bayeux spec. see section 4.2.2
@@ -159,85 +148,73 @@ process_cmd(Req, <<"/meta/connect">> = Channel, Struct, Callback) ->
             Resp = Req:respond({200, [], chunked}),
             loop(Resp, #state{id = ClientId, 
                 connection_type = ConnectionType,
-                events = [Msg],
+                messages = [Msg],
                 callback = Callback});
         _ ->
-            comment_filter({struct, [{successful, false} | L]}, erlycomet_api:connection(ClientId))
+            {struct, [{successful, false} | L]}
     end;    
            
-process_cmd(Req, <<"/meta/disconnect">> = Channel, Struct, _) ->  
+process_channel(Req, <<"/meta/disconnect">> = Channel, Struct, _) ->  
     ClientId = get_json_map_val(<<"clientId">>, Struct),
-    process_cmd1(Req, Channel, ClientId);
+	process_client_id(Req, Channel, ClientId, []);
     
-process_cmd(Req, <<"/meta/subscribe">> = Channel, Struct, _) ->   
+process_channel(Req, Channel, Struct, _) when (<<"/meta/subscribe">> =:= Channel);
+                                                                       (<<"/meta/unsubscribe">> =:= Channel) ->
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     Subscription = get_json_map_val(<<"subscription">>, Struct),
-    process_cmd1(Req, Channel, ClientId, Subscription);
-    
-process_cmd(Req, <<"/meta/unsubscribe">> = Channel, Struct, _) -> 
-    ClientId = get_json_map_val(<<"clientId">>, Struct),
-    Subscription = get_json_map_val(<<"subscription">>, Struct),
-    process_cmd1(Req, Channel, ClientId, Subscription);   
+    process_client_id(Req, Channel, ClientId, Subscription);
           
-process_cmd(Req, Channel, Struct, _) ->
+process_channel(Req, Channel, Struct, _) ->
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     Data = get_json_map_val(<<"data">>, Struct),
-    process_cmd1(Req, Channel, ClientId, rpc(Data, Channel)).   
+    process_client_id(Req, Channel, ClientId, rpc(Data, Channel)).   
     
     
-process_cmd1(_, Channel, undefined) ->
-    {struct, [{<<"channel">>, Channel}, {successful, false}]};       
-process_cmd1(Req, Channel, Id) ->
-    comment_filter(process_cmd2(Req, Channel, Id), erlycomet_api:connection(Id)).
-
-process_cmd1(_, Channel, undefined, _) ->   
+process_client_id(_, Channel, undefined, _) ->   
     {struct, [{<<"channel">>, Channel}, {successful, false}]};  
-process_cmd1(Req, Channel, Id, Data) ->
-    comment_filter(process_cmd2(Req, Channel, Id, Data), erlycomet_api:connection(Id)).
-       
-        
-process_cmd2(_, <<"/meta/disconnect">> = Channel, ClientId) -> 
-    L = [{channel, Channel}, {clientId, ClientId}],
-    case erlycomet_api:remove_connection(ClientId) of
-        ok -> {struct, [{successful, true}  | L]};
-        _ ->  {struct, [{successful, false}  | L]}
-    end. 
+process_client_id(Req, Channel, Id, Data) ->
+    process_data(Req, Channel, Id, Data).
     
-                     
-process_cmd2(_, <<"/meta/subscribe">> = Channel, ClientId, Subscription) ->    
+
+process_data(_, <<"/meta/disconnect">> = Channel, ClientId, _) ->    
+	L = [{channel, Channel}, {clientId, ClientId}],
+	case erlycomet_api:remove_connection(ClientId) of
+		ok -> {struct, [{successful, true}  | L]};
+		_ ->  {struct, [{successful, false}  | L]}
+	end;
+
+process_data(_, <<"/meta/subscribe">> = Channel, ClientId, Subscription) ->    
     L = [{channel, Channel}, {clientId, ClientId}, {subscription, Subscription}],
     case erlycomet_api:subscribe(ClientId, Subscription) of
         ok -> {struct, [{successful, true}  | L]};
         _ ->  {struct, [{successful, false}  | L]}
     end;  
          
-process_cmd2(_, <<"/meta/unsubscribe">> = Channel, ClientId, Subscription) ->  
+process_data(_, <<"/meta/unsubscribe">> = Channel, ClientId, Subscription) ->  
     L = [{channel, Channel}, {clientId, ClientId}, {subscription, Subscription}],          
     case erlycomet_api:unsubscribe(ClientId, Subscription) of
         ok -> {struct, [{successful, true}  | L]};
         _ ->  {struct, [{successful, false}  | L]}
     end;  
     
-process_cmd2(_, <<$/, $s, $e, $r, $v, $i, $c, $e, $/, _/binary>> = Channel, ClientId, Data) ->  
+process_data(_, <<$/, $s, $e, $r, $v, $i, $c, $e, $/, _/binary>> = Channel, ClientId, Data) ->  
     L = [{"channel", Channel}, {"clientId", ClientId}],
-    case erlycomet_api:deliver_to_connection(ClientId, Channel, Data) of
+    case erlycomet_api:deliver_to_connection(ClientId, #event{channel=Channel, sender_id=0, data=Data}) of
         ok -> {struct, [{"successful", true}  | L]};
         _ ->  {struct, [{"successful", false}  | L]}
     end;   
              
-process_cmd2(_, Channel, ClientId, Data) ->  
+process_data(_, Channel, ClientId, Data) ->  
     L = [{channel, Channel}, {clientId, ClientId}],
-    case erlycomet_api:deliver_to_channel(Channel, Data) of
+    case erlycomet_api:deliver_event(#event{channel=Channel, sender_id=ClientId, data=Data}) of
         ok -> {struct, [{successful, true}  | L]};
         _ ->  {struct, [{successful, false}  | L]}
     end.
 
 
 json_decode(Str) ->
-    mochijson2:decode(comment_filter_decode(Str)).
+    mochijson2:decode(Str).
     
-json_encode({comment, Body}) ->
-    comment_filter_encode(mochijson2:encode(Body));
 json_encode(Body) ->
     mochijson2:encode(Body).
 
@@ -246,32 +223,8 @@ callback_wrapper(Data, undefined) ->
     Data;       
 callback_wrapper(Data, Callback) ->
     lists:concat([Callback, "(", Data, ");"]).
-    
-
-comment_filter_decode(Str) ->
-    case Str of 
-        "/*" ++ Rest ->
-            case lists:reverse(Rest) of
-                "/*" ++ Rest2 -> lists:reverse(Rest2);
-                _ -> Str
-            end;
-        _ ->
-            Str
-    end.
-    
-
-comment_filter_encode(Str) ->    
-    lists:concat(["/*", Str, "*/"]).
 
 
-comment_filter(Data, #connection{comment_filtered=CF}=_Row) ->
-    comment_filter(Data, CF);
-comment_filter(Data, true) ->
-    {comment, Data};
-comment_filter(Data, _) ->
-    Data.
-     
-                
 generate_id() ->
     <<Num:128>> = crypto:rand_bytes(16),
     [HexStr] = io_lib:fwrite("~.16B",[Num]),
@@ -283,26 +236,26 @@ generate_id() ->
     end.
 
 
-loop(Resp, #state{events=Events, id=Id, callback=Callback} = State) ->   
+loop(Resp, #state{messages=Msgs, id=ClientId, callback=Callback} = State) ->   
     receive
         stop ->  
-            disconnect(Resp, Id, State);
+            disconnect(Resp, ClientId, State);
         {add, Event} -> 
-            loop(Resp, State#state{events=[Event | Events]});      
+            loop(Resp, State#state{messages=[event_to_json_struct(Event) | Msgs]});
         {flush, Event} -> 
-            Events2 = [Event | Events],
-            send(Resp, events_to_json_struct(Events2, Id), Callback),
-            done;                
+			Msgs2 = [event_to_json_struct(Event) | Msgs],
+            send(Resp, lists:reverse(Msgs2), Callback),
+            done;
         flush -> 
-            send(Resp, events_to_json_struct(Events, Id), Callback),
+            send(Resp, lists:reverse(Msgs), Callback),
             done 
     after State#state.timeout ->
-        disconnect(Resp, Id, Callback)
+        disconnect(Resp, ClientId, Callback)
     end.
 
 
-events_to_json_struct(Events, Id) ->
-    comment_filter(lists:reverse(Events), erlycomet_api:connection(Id)).
+event_to_json_struct(#event{channel=C, data=D}) ->
+	{struct, [{channel, C}, {data, D}]}.
   
     
 send(Resp, Data, Callback) ->
@@ -311,11 +264,10 @@ send(Resp, Data, Callback) ->
     Resp:write_chunk([]).
     
     
-disconnect(Resp, Id, Callback) ->
-    erlycomet_api:remove_connection(Id),
-    Msg = {struct, [{channel, <<"/meta/disconnect">>}, {successful, true}, {clientId, Id}]},
-    Msg2 = comment_filter(Msg, erlycomet_api:connection(Id)),
-    Chunk = callback_wrapper(json_encode(Msg2), Callback),
+disconnect(Resp, ClientId, Callback) ->
+    erlycomet_api:remove_connection(ClientId),
+    Msg = {struct, [{channel, <<"/meta/disconnect">>}, {successful, true}, {clientId, ClientId}]},
+    Chunk = callback_wrapper(json_encode(Msg), Callback),
     Resp:write_chunk(Chunk),
     Resp:write_chunk([]),
     done.

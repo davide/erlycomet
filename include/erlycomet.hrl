@@ -42,5 +42,5 @@
 
 -record(event, {
     channel, 
-    client_id,
+    sender_id=0,
 	data}).

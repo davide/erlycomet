@@ -40,7 +40,6 @@
 %% API
 -export([add_connection/2,
          replace_connection/3,
-         replace_connection/4,
          connections/0,
          connection/1,
          connection_pid/1,
@@ -48,8 +47,8 @@
          subscribe/2,
          unsubscribe/2,
          channels/0,
-         deliver_to_connection/3,
-         deliver_to_channel/2]).
+         deliver_to_connection/2,
+         deliver_event/1]).
 
  
 
@@ -71,34 +70,25 @@ add_connection(ClientId, Pid) ->
     end.
  
 %%-------------------------------------------------------------------------
-%% @spec (string(), pid(), CommentFiltered) -> {ok, new} | {ok, replaced} | error 
+%% @spec (string(), pid(), any()) -> {ok, new} | {ok, replaced} | error 
 %% @doc
 %% replaces a connection
 %% @end
 %%-------------------------------------------------------------------------
-replace_connection(ClientId, Pid, NewState) ->
-    replace_connection(ClientId, Pid, NewState, not_specified).
-
-replace_connection(ClientId, Pid, NewState, CommentFiltered) -> 
-    E = #connection{client_id=ClientId, pid=Pid, comment_filtered=CommentFiltered, state=NewState},
+replace_connection(ClientId, Pid, NewState) -> 
+    E = #connection{client_id=ClientId, pid=Pid, state=NewState},
     F1 = fun() -> mnesia:read({connection, ClientId}) end,
     {Status, F2} = case mnesia:transaction(F1) of
         {atomic, EA} ->
             case EA of
                 [] ->
                     {new, fun() -> mnesia:write(E) end};
-                    [#connection{comment_filtered=CF, state=State}] ->
-                    ER = case CommentFiltered of
-                        not_specified ->
-                            E#connection{comment_filtered=CF};
-                        _ ->
-                            E
-                    end,
+				[#connection{state=State}] ->
                     case State of
                         handshake ->
-                            {replaced_hs, fun() -> mnesia:write(ER) end};
+                            {replaced_hs, fun() -> mnesia:write(E) end};
                         _ ->
-                            {replaced, fun() -> mnesia:write(ER) end}
+                            {replaced, fun() -> mnesia:write(E) end}
                     end
             end;
         _ ->
@@ -214,45 +204,46 @@ channels() ->
 
 
 %%--------------------------------------------------------------------
-%% @spec (string(), string(), tuple()) -> ok | {error, connection_not_found} 
+%% @spec (string(), #event) -> ok | {error, connection_not_found} 
 %% @doc
 %% delivers data to one connection
 %% @end 
 %%--------------------------------------------------------------------  
-deliver_to_connection(ClientId, Channel, Data) ->
-    Event = {struct, [{channel, Channel},  {data, Data}]},
+deliver_to_connection(ClientId, Event) ->
     F = fun() -> mnesia:read({connection, ClientId}) end,
     case mnesia:transaction(F) of 
         {atomic, []} ->
             {error, connection_not_found};
-        {atomic, [#connection{pid=Pid}]} -> 
+        {atomic, [#connection{pid=Pid}]} ->
+			io:format("Delivering ~p to ~p:~p.~n", [Event, ClientId, Pid]),
             Pid ! {flush, Event},
             ok
     end.
     
 
 %%--------------------------------------------------------------------
-%% @spec  (string(), tuple()) -> ok | {error, channel_not_found} 
+%% @spec  (binary(), #event) -> ok | {error, channel_not_found} 
 %% @doc
 %% delivers data to all connections of a channel
 %% @end 
 %%--------------------------------------------------------------------
-deliver_to_channel(Channel, Data) ->
-    globbing(fun deliver_to_single_channel/2, Channel, Data).
+deliver_event(Event) ->
+    globbing(fun deliver_to_single_channel/1, Event).
     
 
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
 
-globbing(Fun, Channel, Data) ->
+globbing(Fun, Event) ->
+	Channel = Event#event.channel,
     case lists:reverse(binary_to_list(Channel)) of
         [$*, $* | T] ->
             lists:map(fun
                     (X) ->
                         case string:str(X, lists:reverse(T)) of
                             1 ->
-                                Fun(Channel, Data);
+                                Fun(Event);
                             _ -> 
                                 skip
                         end                        
@@ -265,7 +256,7 @@ globbing(Fun, Channel, Data) ->
                                 Tokens = string:tokens(string:sub_string(X, length(T) + 1), "/"),
                                 case Tokens of
                                     [_] ->
-                                        Fun(Channel, Data);
+                                        Fun(Event);
                                     _ ->
                                         skip
                                 end;
@@ -274,12 +265,11 @@ globbing(Fun, Channel, Data) ->
                         end                        
                 end, channels());
         _ ->
-            Fun(Channel, Data)
+            Fun(Event)
     end.
 
 
-deliver_to_single_channel(Channel, Data) ->            
-    Event = {struct, [{channel, Channel}, {data, Data}]},                    
+deliver_to_single_channel(#event{channel=Channel} = Event) ->
     F = fun() -> mnesia:read({channel, Channel}) end,
     case mnesia:transaction(F) of 
         {atomic, [{channel, Channel, []}] } -> 
