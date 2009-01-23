@@ -59,68 +59,60 @@
 %%--------------------------------------------------------------------
 handle(Arg) ->
 	Req = Arg#arg.req,
-	Timeout = infinity,
-	handle(Arg, Req#http_request.method, Timeout).
-        
-handle(Arg, 'POST', Timeout) ->
-    handle2(yaws_api:parse_post(Arg), Timeout);
-handle(Arg, 'GET', Timeout) ->
-    handle2(yaws_api:parse_query(Arg), Timeout).
+	Data = case Req#http_request.method of
+		'POST' -> yaws_api:parse_post(Arg);
+		'GET' -> yaws_api:parse_query(Arg)
+	end,
+	%io:format("handle -> ~p~n~p~n~n", [self(), Data]),
+	handle2(Data).
 	
-handle2([{"message", Msg}, {"jsonp", Callback} | _], Timeout) ->
-	YawsWorkerPid = self(),
-	spawn(fun() ->
-		case process_bayeux_msg(YawsWorkerPid, json_decode(Msg), Callback) of
-			done -> ok;
-			[done] -> ok;
-			Body -> 
-				Resp = callback_wrapper(json_encode(Body), Callback),
-				send(YawsWorkerPid, Resp)
-		end
-	  end),
-	{streamcontent_with_timeout, "application/octet-stream", <<>>, Timeout};
-handle2([{"message", Msg} | _], Timeout) ->
-	io:format("CHECK TO SEE IF INSPECTING THIS SHIT WE CAN PREVENT CREATING NEW PROCESSES!~n"),
-	io:format("~p~n~p~n~n", [self(), json_decode(Msg)]),
-	YawsWorkerPid = self(),
-	spawn(fun() ->
-		case process_bayeux_msg(YawsWorkerPid, json_decode(Msg), undefined) of
-			done -> ok;
-			[done] -> ok;
-			Body -> send(YawsWorkerPid, json_encode(Body))
-		end
-	  end),
-	{streamcontent_with_timeout, "application/octet-stream", <<>>, Timeout};
-handle2([{Msg, undefined}], Timeout) ->
-	io:format("REEEEEEEECHECK TO SEE IF INSPECTING THIS SHIT WE CAN PREVENT CREATING NEW PROCESSES!~n"),
-	io:format("~p~n~p~n~n", [self(), json_decode(Msg)]),
-	YawsWorkerPid = self(),
-	spawn(fun() ->
-		case process_bayeux_msg(YawsWorkerPid, json_decode(Msg), undefined) of
-			done -> ok;
-			[done] -> ok;
-			Body -> send(YawsWorkerPid, json_encode(Body))
-		end
-	  end),
-	{streamcontent_with_timeout, "application/octet-stream", <<>>, Timeout};
-handle2(_, _) ->
+handle2([{"message", Msg}, {"jsonp", Callback} | _]) ->
+	case process_bayeux_msg(json_decode(Msg), Callback) of
+		done -> comet_return();
+		[done] -> comet_return();
+		{streamcontent_with_timeout, _, _, _} = Comet -> Comet;
+		[{streamcontent_with_timeout, _, _, _}] = Comet -> Comet;
+		Body -> 
+			Resp = callback_wrapper(json_encode(Body), Callback),
+			send(Resp)
+	end;
+handle2([{"message", Msg} | _]) ->
+	case process_bayeux_msg(json_decode(Msg), undefined) of
+		done -> comet_return();
+		[done] -> comet_return();
+		{streamcontent_with_timeout, _, _, _} = Comet -> Comet;
+		[{streamcontent_with_timeout, _, _, _}] = Comet -> Comet;
+		Body -> send(json_encode(Body))
+	end;
+handle2([{Msg, undefined}]) ->
+	case process_bayeux_msg(json_decode(Msg), undefined) of
+		done -> comet_return();
+		[done] -> comet_return();
+		{streamcontent_with_timeout, _, _, _} = Comet -> Comet;
+		[{streamcontent_with_timeout, _, _, _}] = Comet -> Comet;
+		Body -> send(json_encode(Body))
+	end;
+handle2(_) ->
 	[{status, 404}, {content, "text/html", "Nop."}].
 
 %%====================================================================
 %% Internal functions
 %%====================================================================
 
-process_bayeux_msg(YPid, JsonObj, Callback) ->
+comet_return() ->
+	{streamcontent_with_timeout, "application/octet-stream", <<>>, infinity}.
+
+process_bayeux_msg(JsonObj, Callback) ->
     case JsonObj of   
         Array when is_list(Array) -> 
-            [ process_msg(YPid, X, Callback) || X <- Array ];
+            [ process_msg(X, Callback) || X <- Array ];
         Struct-> 
-            process_msg(YPid, Struct, Callback)
+            process_msg(Struct, Callback)
     end.
 
 
-process_msg(YPid, Struct, Callback) ->
-    process_channel(YPid, get_json_map_val(<<"channel">>, Struct), Struct, Callback).
+process_msg(Struct, Callback) ->
+    process_channel(get_json_map_val(<<"channel">>, Struct), Struct, Callback).
 
 
 get_json_map_val(Key, {struct, Pairs}) when is_list(Pairs) ->
@@ -132,12 +124,12 @@ get_json_map_val(_, _) ->
     undefined.
     
 
-process_channel(_YPid, <<"/meta/handshake">> = Channel, Struct, _) ->  
+process_channel(<<"/meta/handshake">> = Channel, Struct, _) ->  
     % Advice = {struct, [{reconnect, "retry"},
     %                   {interval, 5000}]},
     % - get the alert from 
     _Ext = get_json_map_val(<<"ext">>, Struct),
-    Id = generate_id(),
+    Id = list_to_binary(generate_id()),
     erlycomet_api:replace_connection(Id, 0, handshake),
     JsonResp = {struct, [
         {channel, Channel}, 
@@ -150,7 +142,7 @@ process_channel(_YPid, <<"/meta/handshake">> = Channel, Struct, _) ->
     % Resp2 = [{advice, Advice} | Resp],
     JsonResp;
     
-process_channel(YPid, <<"/meta/connect">> = Channel, Struct, Callback) ->  
+process_channel(<<"/meta/connect">> = Channel, Struct, Callback) ->  
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     ConnectionType = get_json_map_val(<<"connectionType">>, Struct),
     L = [{channel,  Channel}, {clientId, ClientId}],
@@ -163,22 +155,22 @@ process_channel(YPid, <<"/meta/connect">> = Channel, Struct, Callback) ->
         {ok, replaced} ->   
             Msg  = {struct, [{successful, true} | L]},
 			State = #state{id = ClientId, connection_type = ConnectionType, messages = [Msg], callback = Callback},
-			loop(YPid, State);
+			loop(State);
         _ ->
             {struct, [{successful, false} | L]}
     end;    
     
-process_channel(_YPid, <<"/meta/disconnect">> = Channel, Struct, _) ->  
+process_channel(<<"/meta/disconnect">> = Channel, Struct, _) ->  
     ClientId = get_json_map_val(<<"clientId">>, Struct),
 	process_client_id(Channel, ClientId, []);
     
-process_channel(_YPid, Channel, Struct, _) when (<<"/meta/subscribe">> =:= Channel);
+process_channel(Channel, Struct, _) when (<<"/meta/subscribe">> =:= Channel);
                                                                    (<<"/meta/unsubscribe">> =:= Channel) ->
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     Subscription = get_json_map_val(<<"subscription">>, Struct),
     process_client_id(Channel, ClientId, Subscription);
           
-process_channel(_YPid, Channel, Struct, _) ->
+process_channel(Channel, Struct, _) ->
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     Data = get_json_map_val(<<"data">>, Struct),
     process_client_id(Channel, ClientId, rpc(Data, Channel)).   
@@ -187,7 +179,6 @@ process_channel(_YPid, Channel, Struct, _) ->
 process_client_id(Channel, undefined, _) ->   
     {struct, [{<<"channel">>, Channel}, {successful, false}]};  
 process_client_id(Channel, Id, Data) ->
-	io:format("~n~nIO! ID: ~p Pid: ~p~n~n", [Id, self()]),
     process_data(Channel, Id, Data).
 
 
@@ -251,22 +242,20 @@ generate_id() ->
     end.
 
 
-loop(YPid, #state{messages=Msgs, id=ClientId, callback=Callback} = State) ->   
+loop(#state{messages=Msgs, id=ClientId, callback=Callback} = State) ->   
     receive
         stop ->
-            disconnect(YPid, ClientId, State);
+            disconnect(ClientId, State);
         {add, Event} -> 
-            loop(YPid, State#state{messages=[event_to_json_struct(Event) | Msgs]});
+            loop(State#state{messages=[event_to_json_struct(Event) | Msgs]});
         {flush, Event} ->
-			io:format("Flushing:~n~p!~n", [Event]),
+			io:format("Flushing in ~p data:~n~p~n~n~n", [self(), Event]),
             Msgs2 = [event_to_json_struct(Event) | Msgs],
-            send(YPid, lists:reverse(Msgs2), Callback),
-            done;
+            send(lists:reverse(Msgs2), Callback);
         flush -> 
-            send(YPid, lists:reverse(Msgs), Callback),
-            done 
+            send(lists:reverse(Msgs), Callback)
     after State#state.timeout ->
-        disconnect(YPid, ClientId, Callback)
+        disconnect(ClientId, Callback)
     end.
 
 
@@ -274,21 +263,23 @@ event_to_json_struct(#event{channel=C, data=D}) ->
 	{struct, [{channel, C}, {data, D}]}.
 
 
-send(YPid, Data, Callback) ->
+send(Data, Callback) ->
     Chunk = callback_wrapper(json_encode(Data), Callback),
-	send(YPid, Chunk).
+	send(Chunk).
 
-send(YPid, Data) ->
-    yaws_api:stream_chunk_deliver(YPid, Data),
-	yaws_api:stream_chunk_end(YPid).
+send(Data) ->
+	YawsWorkerPid = self(),
+	spawn(fun() ->
+				yaws_api:stream_chunk_deliver(YawsWorkerPid, Data),
+				yaws_api:stream_chunk_end(YawsWorkerPid)
+			end),
+	comet_return().
     
-disconnect(YPid, ClientId, Callback) ->
+disconnect(ClientId, Callback) ->
     erlycomet_api:remove_connection(ClientId),
     Msg = {struct, [{channel, <<"/meta/disconnect">>}, {successful, true}, {clientId, ClientId}]},
     Chunk = callback_wrapper(json_encode(Msg), Callback),
-	yaws_api:stream_chunk_deliver(YPid, Chunk),
-	yaws_api:stream_chunk_end(YPid),
-    done.
+	send(Chunk).
     
     
 rpc({struct, [{<<"id">>, Id}, {<<"method">>, Method}, {<<"params">>, Params}]}, Channel) ->
