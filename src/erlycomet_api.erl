@@ -38,67 +38,60 @@
 
 
 %% API
--export([add_connection/2,
-         replace_connection/3,
+-export([add_client_connection/2,
+		 replace_client_connection/3,
+		 add_server_connection/2,
+         replace_server_connection/3,
          connections/0,
          connection/1,
          connection_pid/1,
          remove_connection/1,
+		 drop_inactive_connections/1,
          subscribe/2,
          unsubscribe/2,
          channels/0,
          deliver_to_connection/2,
          deliver_event/1]).
 
- 
-
 %%====================================================================
 %% API
 %%====================================================================
+
 %%-------------------------------------------------------------------------
 %% @spec (string(), pid()) -> ok | error 
 %% @doc
-%% adds a connection
+%% adds a connection, using the current timestamp
 %% @end
 %%-------------------------------------------------------------------------
-add_connection(ClientId, Pid) -> 
-    E = #connection{client_id=ClientId, pid=Pid},
-    F = fun() -> mnesia:write(E) end,
-    case mnesia:transaction(F) of
-        {atomic, ok} -> ok;
-        _ -> error
-    end.
+add_client_connection(ClientId, Pid) ->
+	add_connection(ClientId, Pid, connection_timestamp()).
+
+%%-------------------------------------------------------------------------
+%% @spec (string(), pid()) -> ok | error 
+%% @doc
+%% adds a connection, using a timestamp of infinity
+%% @end
+%%-------------------------------------------------------------------------
+add_server_connection(ClientId, Pid) ->
+	add_connection(ClientId, Pid, infinity).
  
 %%-------------------------------------------------------------------------
 %% @spec (string(), pid(), any()) -> {ok, new} | {ok, replaced} | error 
 %% @doc
-%% replaces a connection
+%% replaces a connection, using the current timestamp
 %% @end
 %%-------------------------------------------------------------------------
-replace_connection(ClientId, Pid, NewState) -> 
-    E = #connection{client_id=ClientId, pid=Pid, state=NewState},
-    F1 = fun() -> mnesia:read({connection, ClientId}) end,
-    {Status, F2} = case mnesia:transaction(F1) of
-        {atomic, EA} ->
-            case EA of
-                [] ->
-                    {new, fun() -> mnesia:write(E) end};
-				[#connection{state=State}] ->
-                    case State of
-                        handshake ->
-                            {replaced_hs, fun() -> mnesia:write(E) end};
-                        _ ->
-                            {replaced, fun() -> mnesia:write(E) end}
-                    end
-            end;
-        _ ->
-            {new, fun() -> mnesia:write(E) end}
-    end,
-    case mnesia:transaction(F2) of
-        {atomic, ok} -> {ok, Status};
-        _ -> error
-    end.
-       
+replace_client_connection(ClientId, Pid, NewState) ->
+	replace_connection(ClientId, Pid, NewState, connection_timestamp()).
+ 
+%%-------------------------------------------------------------------------
+%% @spec (string(), pid(), any()) -> {ok, new} | {ok, replaced} | error 
+%% @doc
+%% replaces a connection, using a timestamp of infinity
+%% @end
+%%-------------------------------------------------------------------------
+replace_server_connection(ClientId, Pid, NewState) ->
+	replace_connection(ClientId, Pid, NewState, infinity).
           
 %%--------------------------------------------------------------------
 %% @spec () -> list()
@@ -147,6 +140,33 @@ remove_connection(ClientId) ->
         _ -> error
     end.    
 
+%%--------------------------------------------------------------------
+%% @spec (string()) -> ok | error  
+%% @doc
+%% drop all "dead" connections that might have
+%% exceeded the maximum timeout
+%% @end 
+%%--------------------------------------------------------------------  
+drop_inactive_connections(Timeout) ->
+	Connections = connections(),
+	lists:foldl(
+		fun
+			(#connection{timestamp=infinity}, Acc) -> % Server-side connections
+				Acc;
+			(#connection{client_id=ClientId, pid=Pid, timestamp=Timestamp}, Acc) ->
+				io:format("~p is ", [Pid]),
+				case is_pid(Pid) andalso is_process_alive(Pid) of
+					true ->
+						io:format("alive!~n"),
+						Acc;
+					false ->
+						io:format("dead! Removing connection!~n"),
+						remove_connection(ClientId),
+						[ClientId|Acc]
+				end
+		end,
+		[],
+		Connections).
 
 %%--------------------------------------------------------------------
 %% @spec (string(), string()) -> ok | error 
@@ -162,7 +182,8 @@ subscribe(ClientId, ChannelName) ->
             [#channel{client_ids=[]}=Channel1] ->
                 Channel1#channel{client_ids=[ClientId]};
             [#channel{client_ids=Ids}=Channel1] ->
-                Channel1#channel{client_ids=[ClientId | Ids]}
+				ClientIds = Ids--[ClientId], % this makes the function idempotent
+                Channel1#channel{client_ids=[ClientId | ClientIds]}
         end,
         mnesia:write(Channel)
     end,
@@ -293,3 +314,55 @@ do(QLC) ->
     {atomic, Val} = mnesia:transaction(F),
     Val.
 
+%%-------------------------------------------------------------------------
+%% @spec () -> integer() | error 
+%% @doc
+%% returns the internal representation for timestamping connections
+%% @end
+%%-------------------------------------------------------------------------
+connection_timestamp() ->
+	calendar:datetime_to_gregorian_seconds(calendar:universal_time()).
+
+%%-------------------------------------------------------------------------
+%% @spec (string(), pid()) -> ok | error 
+%% @doc
+%% adds a connection, using the given timestamp
+%% @end
+%%-------------------------------------------------------------------------
+add_connection(ClientId, Pid, Timestamp) -> 
+    E = #connection{client_id=ClientId, pid=Pid, timestamp=Timestamp},
+    F = fun() -> mnesia:write(E) end,
+    case mnesia:transaction(F) of
+        {atomic, ok} -> ok;
+        _ -> error
+    end.
+
+%%-------------------------------------------------------------------------
+%% @spec (string(), pid(), any(), integer()) -> {ok, new} | {ok, replaced} | error 
+%% @doc
+%% replaces a connection
+%% @end
+%%-------------------------------------------------------------------------
+replace_connection(ClientId, Pid, NewState, Timestamp) -> 
+    E = #connection{client_id=ClientId, pid=Pid, timestamp=Timestamp, state=NewState},
+    F1 = fun() -> mnesia:read({connection, ClientId}) end,
+    {Status, F2} = case mnesia:transaction(F1) of
+        {atomic, EA} ->
+            case EA of
+                [] ->
+                    {new, fun() -> mnesia:write(E) end};
+				[#connection{state=State}] ->
+                    case State of
+                        handshake ->
+                            {replaced_hs, fun() -> mnesia:write(E) end};
+                        _ ->
+                            {replaced, fun() -> mnesia:write(E) end}
+                    end
+            end;
+        _ ->
+            {new, fun() -> mnesia:write(E) end}
+    end,
+    case mnesia:transaction(F2) of
+        {atomic, ok} -> {ok, Status};
+        _ -> error
+    end.

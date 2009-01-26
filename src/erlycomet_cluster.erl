@@ -40,7 +40,7 @@
 
 
 %% API
--export([start/0, 
+-export([start/1, 
          stop/0,
 		 is_global/0]).
 
@@ -64,12 +64,12 @@
 %% @doc Starts the server
 %% @end 
 %%--------------------------------------------------------------------
-start() ->
+start(AdditionalMnesiaTables) ->
     Start = gen_server_cluster:start(?MODULE, ?MODULE, [], []),
     Node = node(),
     case catch gen_server_cluster:get_all_server_nodes(?MODULE) of
 	    {Node, _} ->
-	        up_master();
+	        up_master(AdditionalMnesiaTables);
         {Master, _}->
             gen_server:call(Master, add_mnesia_slave),
             mnesia:start(),
@@ -189,7 +189,7 @@ mnesia_tables() ->
        {attributes, record_info(fields, channel)}]}].
        
 
-up_master() ->
+up_master(AdditionalMnesiaTables) ->
     mnesia:start(),
     lists:foreach(fun ({Name, Args}) ->
 			  case mnesia:create_table(Name, Args) of
@@ -197,5 +197,5 @@ up_master() ->
 			      {aborted, {already_exists, _}} -> ok
 			  end
 		  end,
-		  mnesia_tables()).
+		  mnesia_tables() ++ AdditionalMnesiaTables).
 

@@ -33,7 +33,8 @@
 
 -record(connection, {
     client_id, 
-    pid, 
+    pid,
+	timestamp,
     state}).
 
 -record(channel, {

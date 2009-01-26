@@ -130,7 +130,7 @@ process_channel(<<"/meta/handshake">> = Channel, Struct, _) ->
     % - get the alert from 
     _Ext = get_json_map_val(<<"ext">>, Struct),
     Id = list_to_binary(generate_id()),
-    erlycomet_api:replace_connection(Id, 0, handshake),
+    erlycomet_api:replace_client_connection(Id, 0, handshake),
     JsonResp = {struct, [
         {channel, Channel}, 
         {version, 1.0},
@@ -146,7 +146,7 @@ process_channel(<<"/meta/connect">> = Channel, Struct, Callback) ->
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     ConnectionType = get_json_map_val(<<"connectionType">>, Struct),
     L = [{channel,  Channel}, {clientId, ClientId}],
-    case erlycomet_api:replace_connection(ClientId, self(), connected) of
+    case erlycomet_api:replace_client_connection(ClientId, self(), connected) of
         {ok, Status} when Status =:= ok ; Status =:= replaced_hs ->
             {struct, [{successful, true} | L]};
             % don't reply immediately to new connect message.
@@ -242,44 +242,43 @@ generate_id() ->
     end.
 
 
-loop(#state{messages=Msgs, id=ClientId, callback=Callback} = State) ->   
+loop(#state{messages=Msgs} = State) ->   
     receive
         stop ->
-            disconnect(ClientId, State);
+            disconnect(State);
         {add, Event} -> 
             loop(State#state{messages=[event_to_json_struct(Event) | Msgs]});
         {flush, Event} ->
-			io:format("Flushing in ~p data:~n~p~n~n~n", [self(), Event]),
-            Msgs2 = [event_to_json_struct(Event) | Msgs],
-            send(lists:reverse(Msgs2), Callback);
+            send(State#state{messages=[event_to_json_struct(Event) | Msgs]});
         flush -> 
-            send(lists:reverse(Msgs), Callback)
+            send(State)
     after State#state.timeout ->
-        disconnect(ClientId, Callback)
+		disconnect(State)
     end.
-
 
 event_to_json_struct(#event{channel=C, data=D}) ->
 	{struct, [{channel, C}, {data, D}]}.
 
-
-send(Data, Callback) ->
-    Chunk = callback_wrapper(json_encode(Data), Callback),
-	send(Chunk).
-
+send(#state{messages=Msgs, callback=Callback}) ->
+    Data = callback_wrapper(json_encode(lists:reverse(Msgs)), Callback),
+	send(Data);
 send(Data) ->
 	YawsWorkerPid = self(),
-	spawn(fun() ->
-				yaws_api:stream_chunk_deliver(YawsWorkerPid, Data),
+	spawn_link(fun() ->
+				% Exit on send failure
+				case yaws_api:stream_chunk_deliver_blocking(YawsWorkerPid, Data) of
+					ok -> ok;
+					{error, _Rsn} ->
+						exit(connection_reset_by_peer)
+				end,
 				yaws_api:stream_chunk_end(YawsWorkerPid)
 			end),
 	comet_return().
     
-disconnect(ClientId, Callback) ->
+disconnect(#state{messages=Msgs, id=ClientId} = State) ->
     erlycomet_api:remove_connection(ClientId),
     Msg = {struct, [{channel, <<"/meta/disconnect">>}, {successful, true}, {clientId, ClientId}]},
-    Chunk = callback_wrapper(json_encode(Msg), Callback),
-	send(Chunk).
+	send(State#state{messages=[Msg | Msgs]}).
     
     
 rpc({struct, [{<<"id">>, Id}, {<<"method">>, Method}, {<<"params">>, Params}]}, Channel) ->

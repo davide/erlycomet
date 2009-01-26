@@ -121,7 +121,7 @@ process_channel(_Req, <<"/meta/handshake">> = Channel, Struct, _) ->
     % - get the alert from 
     _Ext = get_json_map_val(<<"ext">>, Struct),
     Id = generate_id(),
-    erlycomet_api:replace_connection(Id, 0, handshake),
+    erlycomet_api:replace_client_connection(Id, 0, handshake),
     JsonResp = {struct, [
         {channel, Channel}, 
         {version, 1.0},
@@ -137,7 +137,7 @@ process_channel(Req, <<"/meta/connect">> = Channel, Struct, Callback) ->
     ClientId = get_json_map_val(<<"clientId">>, Struct),
     ConnectionType = get_json_map_val(<<"connectionType">>, Struct),
     L = [{channel,  Channel}, {clientId, ClientId}],    
-    case erlycomet_api:replace_connection(ClientId, self(), connected) of
+    case erlycomet_api:replace_client_connection(ClientId, self(), connected) of
         {ok, Status} when Status =:= ok ; Status =:= replaced_hs ->
             {struct, [{successful, true} | L]};
             % don't reply immediately to new connect message.
