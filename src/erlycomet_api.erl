@@ -50,6 +50,7 @@
          subscribe/2,
          unsubscribe/2,
          channels/0,
+         channel/1,
          deliver_to_connection/2,
          deliver_event/1]).
 
@@ -229,6 +230,16 @@ unsubscribe(ClientId, ChannelName) ->
 %%--------------------------------------------------------------------
 channels() ->
     do(qlc:q([X || X <-mnesia:table(channel)])).
+
+
+%%--------------------------------------------------------------------
+%% @spec (binary()) -> list()
+%% @doc
+%% returns the data for the given channel
+%% @end 
+%%--------------------------------------------------------------------
+channel(Channel) ->
+    do(qlc:q([X || #channel{name=C}=X <-mnesia:table(channel), C=:=Channel])).
 
 
 %%--------------------------------------------------------------------
