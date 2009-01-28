@@ -143,9 +143,13 @@ remove_connection(ClientId) ->
 %%--------------------------------------------------------------------
 %% @spec (string()) -> ok | error  
 %% @doc
-%% drop all "dead" connections that might have
-%% exceeded the maximum timeout
-%% @end 
+%% drop the connections for all "dead" clients
+%% This equates to that person being away from the chat.
+%% Now depending on whether the chat is being logged or not
+%% that can mean that the person as left the chat (and won't
+%% receive any messages until she returns) or is simply away
+%% (and will be able to fetch later on the messages being sent).
+%% @end
 %%--------------------------------------------------------------------  
 drop_inactive_connections(Timeout) ->
 	Connections = connections(),
@@ -154,15 +158,18 @@ drop_inactive_connections(Timeout) ->
 			(#connection{timestamp=infinity}, Acc) -> % Server-side connections
 				Acc;
 			(#connection{client_id=ClientId, pid=Pid, timestamp=Timestamp}, Acc) ->
-				io:format("~p is ", [Pid]),
 				case is_pid(Pid) andalso is_process_alive(Pid) of
 					true ->
-						io:format("alive!~n"),
 						Acc;
 					false ->
-						io:format("dead! Removing connection!~n"),
-						remove_connection(ClientId),
-						[ClientId|Acc]
+						TimeDiff = connection_timestamp() - Timestamp,
+						if	(TimeDiff > Timeout) ->
+								io:format("~p is dead! Removing connection!~n", [Pid]),
+								remove_connection(ClientId),
+								[ClientId|Acc];
+							true ->
+								Acc
+						end
 				end
 		end,
 		[],
