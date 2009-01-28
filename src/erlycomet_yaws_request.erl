@@ -1,14 +1,15 @@
 %%%-------------------------------------------------------------------
 %%% @author Roberto Saccon <rsaccon@gmail.com> [http://rsaccon.com]
 %%% @author Tait Larson
-%%% @copyright 2007 Roberto Saccon, Tait Larson
+%%% @author Davide Marquês
+%%% @copyright 2009 Roberto Saccon, Tait Larson, Davide Marquês
 %%% @doc 
-%%% Comet extension for MochiWeb
+%%% Comet extension for Yaws
 %%% @end  
 %%%
 %%% The MIT License
 %%%
-%%% Copyright (c) 2007 Roberto Saccon, Tait Larson
+%%% Copyright (c) 2009 Roberto Saccon, Tait Larson, Davide Marquês
 %%%
 %%% Permission is hereby granted, free of charge, to any person obtaining a copy
 %%% of this software and associated documentation files (the "Software"), to deal
@@ -33,6 +34,7 @@
 -module(erlycomet_yaws_request, [CustomAppModule]).
 -author('telarson@gmail.com').
 -author('rsaccon@gmail.com').
+-author('nesrait@gmail.com').
 
 
 %% API

@@ -1,7 +1,8 @@
 %%%---------------------------------------------------------------------------------------
 %%% @author     Roberto Saccon <rsaccon@gmail.com> [http://rsaccon.com]
 %%% @author     Roberto Saccon <telarson@gmail.com>
-%%% @copyright  2007 Roberto Saccon, Tait Larson
+%%% @author     Davide Marquês
+%%% @copyright  2009 Roberto Saccon, Tait Larson, Davide Marquês
 %%% @doc        gloabl server and mnesia broker
 %%% @reference  See <a href="http://erlyvideo.googlecode.com" target="_top">http://erlyvideo.googlecode.com</a> for more information
 %%% @end
@@ -9,7 +10,7 @@
 %%%
 %%% The MIT License
 %%%
-%%% Copyright (c) 2007 Roberto Saccon, Tait Larson
+%%% Copyright (c) 2009 Roberto Saccon, Tait Larson, Davide Marquês
 %%%
 %%% Permission is hereby granted, free of charge, to any person obtaining a copy
 %%% of this software and associated documentation files (the "Software"), to deal
@@ -33,6 +34,8 @@
 -module(erlycomet_api).
 -author('rsaccon@gmail.com').
 -author('telarson@gmail.com').
+-author('nesrait@gmail.com').
+
 -include("erlycomet.hrl").
 -include_lib("stdlib/include/qlc.hrl").
 
@@ -254,7 +257,7 @@ deliver_to_connection(ClientId, Event) ->
         {atomic, []} ->
             {error, connection_not_found};
         {atomic, [#connection{pid=Pid}]} ->
-			io:format("Delivering ~p to ~p:~p.~n", [Event, ClientId, Pid]),
+			io:format("Delivering ~p to ~p:~p, ~p.~n", [Event, ClientId, Pid, is_process_alive(Pid)]),
             Pid ! {flush, Event},
             ok
     end.
