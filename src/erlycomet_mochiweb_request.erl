@@ -120,7 +120,7 @@ process_channel(_Req, <<"/meta/handshake">> = Channel, Struct, _) ->
     %                   {interval, 5000}]},
     % - get the alert from 
     _Ext = get_json_map_val(<<"ext">>, Struct),
-    Id = generate_id(),
+    Id = list_to_binary(generate_id()),
     erlycomet_api:replace_client_connection(Id, 0, handshake),
     JsonResp = {struct, [
         {channel, Channel}, 
