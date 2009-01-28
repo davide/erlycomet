@@ -265,15 +265,16 @@ send(#state{messages=Msgs, callback=Callback}) ->
     Data = callback_wrapper(json_encode(lists:reverse(Msgs)), Callback),
 	send(Data);
 send(Data) ->
-	YawsWorkerPid = self(),
-	spawn_link(fun() ->
-				% Exit on send failure
-				case yaws_api:stream_chunk_deliver_blocking(YawsWorkerPid, Data) of
-					ok -> ok;
-					{error, _Rsn} ->
-						exit(connection_reset_by_peer)
-				end,
-				yaws_api:stream_chunk_end(YawsWorkerPid)
+	YawsPid = self(),
+	spawn(fun() ->
+				% Since we won't recover from send failure we can simply use an asynchronous send
+				%~ case yaws_api:stream_chunk_deliver_blocking(YawsPid, Data) of
+					%~ ok -> ok;
+					%~ {error, _Rsn} ->
+						%~ exit(connection_reset_by_peer)
+				%~ end,
+				yaws_api:stream_chunk_deliver(YawsPid, Data),
+				yaws_api:stream_chunk_end(YawsPid)
 			end),
 	comet_return().
     
