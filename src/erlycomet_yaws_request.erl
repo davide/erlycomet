@@ -189,7 +189,9 @@ process_data(<<"/meta/disconnect">> = Channel, ClientId, _) ->
 		_ ->  {struct, [{successful, false}  | L]}
 	end;
 
-process_data(<<"/meta/subscribe">> = Channel, ClientId, Subscription) ->    
+process_data(<<"/meta/subscribe">> = Channel, ClientId, <<$/, $s, $e, $r, $v, $i, $c, $e, $/, _/binary>> = Subscription) ->
+	{struct, [{successful, false}, {channel, Channel}, {clientId, ClientId}, {subscription, Subscription}]};
+process_data(<<"/meta/subscribe">> = Channel, ClientId, Subscription) ->
     L = [{channel, Channel}, {clientId, ClientId}, {subscription, Subscription}],
     case erlycomet_api:subscribe(ClientId, Subscription) of
         ok -> {struct, [{successful, true}  | L]};
@@ -202,10 +204,10 @@ process_data(<<"/meta/unsubscribe">> = Channel, ClientId, Subscription) ->
         ok -> {struct, [{successful, true}  | L]};
         _ ->  {struct, [{successful, false}  | L]}
     end;  
-    
+
 process_data(<<$/, $s, $e, $r, $v, $i, $c, $e, $/, _/binary>> = Channel, ClientId, Data) ->  
     L = [{"channel", Channel}, {"clientId", ClientId}],
-    case erlycomet_api:deliver_to_connection(ClientId, #event{channel=Channel, sender_id=0, data=Data}) of
+    case erlycomet_api:deliver_event(#event{channel=Channel, sender_id=ClientId, data=Data}) of
         ok -> {struct, [{"successful", true}  | L]};
         _ ->  {struct, [{"successful", false}  | L]}
     end;   
